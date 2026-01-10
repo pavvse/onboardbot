@@ -72,7 +72,7 @@ function extractReferralList(apiResponse) {
     return allReferrals;
 }
 
-async function verifyReferralCode(code) {
+async function verifyUsername(username) {
     const referrals = await fetchReferrals();
 
     if (!referrals) {
@@ -85,13 +85,15 @@ async function verifyReferralCode(code) {
         return { success: false, error: 'No referrals found in API response' };
     }
 
-    const match = referralList.find(ref => ref.referralCode === code);
+    const match = referralList.find(ref =>
+        ref.name && ref.name.toLowerCase() === username.toLowerCase()
+    );
 
     if (match) {
         return { success: true, user: match };
     }
 
-    return { success: false, error: 'Referral code not found' };
+    return { success: false, error: 'Username not found' };
 }
 
 client.once('ready', async () => {
@@ -101,10 +103,10 @@ client.once('ready', async () => {
     const commands = [
         new SlashCommandBuilder()
             .setName('verify')
-            .setDescription('Verify your referral code to get academy access')
+            .setDescription('Verify your Coinwave username to get academy access')
             .addStringOption(option =>
-                option.setName('code')
-                    .setDescription('Your referral code')
+                option.setName('username')
+                    .setDescription('Your Coinwave username')
                     .setRequired(true)
             ),
         new SlashCommandBuilder()
@@ -114,7 +116,16 @@ client.once('ready', async () => {
         new SlashCommandBuilder()
             .setName('setup-verify')
             .setDescription('Send the verification embed to this channel (Admin only)')
+            .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+        new SlashCommandBuilder()
+            .setName('send-referral-note')
+            .setDescription('Send the referral code note as a reply to a message (Admin only)')
             .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+            .addStringOption(option =>
+                option.setName('message_id')
+                    .setDescription('The message ID to reply to')
+                    .setRequired(true)
+            )
     ].map(command => command.toJSON());
 
     const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
@@ -139,16 +150,16 @@ client.on('interactionCreate', async (interaction) => {
                 .setCustomId('verify_modal')
                 .setTitle('Dark Academy Verification');
 
-            const codeInput = new TextInputBuilder()
-                .setCustomId('referral_code')
-                .setLabel('Enter your referral code')
+            const usernameInput = new TextInputBuilder()
+                .setCustomId('coinwave_username')
+                .setLabel('Enter your Coinwave username')
                 .setStyle(TextInputStyle.Short)
-                .setPlaceholder('e.g. ABC123XY')
+                .setPlaceholder('e.g. zonsol')
                 .setRequired(true)
-                .setMinLength(4)
-                .setMaxLength(20);
+                .setMinLength(2)
+                .setMaxLength(30);
 
-            const actionRow = new ActionRowBuilder().addComponents(codeInput);
+            const actionRow = new ActionRowBuilder().addComponents(usernameInput);
             modal.addComponents(actionRow);
 
             await interaction.showModal(modal);
@@ -161,8 +172,8 @@ client.on('interactionCreate', async (interaction) => {
         if (interaction.customId === 'verify_modal') {
             await interaction.deferReply({ ephemeral: true });
 
-            const code = interaction.fields.getTextInputValue('referral_code').trim().toUpperCase();
-            const result = await verifyReferralCode(code);
+            const username = interaction.fields.getTextInputValue('coinwave_username').trim();
+            const result = await verifyUsername(username);
 
             if (result.success) {
                 const roleId = process.env.VERIFIED_ROLE_ID;
@@ -188,7 +199,7 @@ client.on('interactionCreate', async (interaction) => {
                 }
             } else {
                 await interaction.editReply({
-                    content: `**Verification failed.**\nThe referral code \`${code}\` was not found. Please check your code and try again.`
+                    content: `**Verification failed.**\nThe username \`${username}\` was not found. Make sure you used the referral code VONDRAKEN when signing up.`
                 });
             }
             return;
@@ -200,8 +211,8 @@ client.on('interactionCreate', async (interaction) => {
     if (interaction.commandName === 'verify') {
         await interaction.deferReply({ ephemeral: true });
 
-        const code = interaction.options.getString('code');
-        const result = await verifyReferralCode(code);
+        const username = interaction.options.getString('username');
+        const result = await verifyUsername(username);
 
         if (result.success) {
             // Try to assign the verified role
@@ -274,12 +285,12 @@ client.on('interactionCreate', async (interaction) => {
             })
             .setTitle('Academy Enrollment')
             .setDescription(
-                'Welcome! To gain access to the academy, you must verify your referral code.\n\n' +
+                'Welcome! To gain access to the academy, you must verify your Coinwave username.\n\n' +
                 '**How to verify:**\n' +
                 '1. Click the button below\n' +
-                '2. Enter your referral code\n' +
+                '2. Enter your Coinwave username\n' +
                 '3. Get instant access!\n\n' +
-                '*Your referral code was provided when you signed up.*'
+                '*Make sure you signed up using the referral code* `VONDRAKEN`'
             )
             .setThumbnail('https://pbs.twimg.com/profile_images/1993457185062273024/-4D7BHKI_400x400.jpg')
             .setFooter({ text: 'Dark Academy' })
@@ -287,7 +298,7 @@ client.on('interactionCreate', async (interaction) => {
 
         const button = new ButtonBuilder()
             .setCustomId('verify_button')
-            .setLabel('Verify Referral Code')
+            .setLabel('Verify Username')
             .setStyle(ButtonStyle.Secondary);
 
         const row = new ActionRowBuilder().addComponents(button);
@@ -301,6 +312,39 @@ client.on('interactionCreate', async (interaction) => {
             content: 'Verification embed has been sent!',
             ephemeral: true
         });
+    }
+
+    if (interaction.commandName === 'send-referral-note') {
+        const messageId = interaction.options.getString('message_id');
+
+        try {
+            const message = await interaction.channel.messages.fetch(messageId);
+
+            const noteEmbed = new EmbedBuilder()
+                .setColor(0x000000)
+                .setAuthor({
+                    name: 'Dark Academy',
+                    iconURL: 'https://pbs.twimg.com/profile_images/1993457185062273024/-4D7BHKI_400x400.jpg'
+                })
+                .setDescription(
+                    '**To gain access to the academy, you must use the referral code:**\n\n' +
+                    '`VONDRAKEN`\n\n' +
+                    'Sign up here: https://join.coinwave.gg/VONDRAKEN'
+                );
+
+            await message.reply({ embeds: [noteEmbed] });
+
+            await interaction.reply({
+                content: 'Referral note sent!',
+                ephemeral: true
+            });
+        } catch (error) {
+            console.error('Error sending note:', error);
+            await interaction.reply({
+                content: 'Failed to send note. Make sure the message ID is correct and in this channel.',
+                ephemeral: true
+            });
+        }
     }
 });
 
