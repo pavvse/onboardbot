@@ -22,78 +22,144 @@ const client = new Client({
     ]
 });
 
-const COINWAVE_API = 'https://api.coinwave.gg/users/me/referrals';
+const COINWAVE_API_BASE = 'https://api.coinwave.gg/admin-internals/affiliates/VONDRAKEN';
+const PAGE_SIZE = 100;
 
-async function fetchReferrals() {
+async function fetchAffiliatesPage(page = 1) {
+    const url = `${COINWAVE_API_BASE}?page=${page}&pageSize=${PAGE_SIZE}`;
+    console.log(`[API] Fetching page ${page}: ${url}`);
+
     try {
-        const response = await fetch(COINWAVE_API, {
+        const response = await fetch(url, {
             headers: {
                 'Cookie': process.env.COINWAVE_COOKIE,
                 'Accept': 'application/json'
             }
         });
 
+        console.log(`[API] Response status: ${response.status}`);
+
         if (!response.ok) {
+            const errorText = await response.text();
+            console.error(`[API] Error response body: ${errorText}`);
             throw new Error(`API returned ${response.status}`);
         }
 
-        return await response.json();
+        const json = await response.json();
+        console.log(`[API] Response keys: ${Object.keys(json).join(', ')}`);
+        console.log(`[API] Raw response preview: ${JSON.stringify(json).substring(0, 500)}`);
+
+        return json;
     } catch (error) {
-        console.error('Error fetching referrals:', error);
+        console.error(`[API] Error fetching affiliates page ${page}:`, error);
         return null;
     }
 }
 
-function extractReferralList(apiResponse) {
-    if (!apiResponse || !apiResponse.data) return [];
+async function fetchAllAffiliates() {
+    console.log(`[FETCH_ALL] Starting to fetch all affiliates`);
+    const allAffiliates = [];
+    let page = 1;
+    let hasMore = true;
 
-    const allReferrals = [];
+    while (hasMore) {
+        const response = await fetchAffiliatesPage(page);
 
-    // Recursively flatten nested referrals
-    function flattenReferrals(referralArray) {
-        if (!Array.isArray(referralArray)) return;
+        if (!response) {
+            console.log(`[FETCH_ALL] Failed to get page ${page}, stopping`);
+            break;
+        }
 
-        for (const ref of referralArray) {
-            if (ref.referralCode) {
-                allReferrals.push(ref);
+        const affiliates = response.data?.affiliates || response.affiliates || response.data || response;
+        console.log(`[FETCH_ALL] Page ${page}: got ${Array.isArray(affiliates) ? affiliates.length : 0} affiliates`);
+
+        if (Array.isArray(affiliates) && affiliates.length > 0) {
+            allAffiliates.push(...affiliates);
+
+            // Check if there are more pages
+            const total = response.data?.total || response.data?.totalCount || response.total || response.totalCount;
+            if (total) {
+                hasMore = allAffiliates.length < total;
+            } else {
+                hasMore = affiliates.length === PAGE_SIZE;
             }
-            // Recursively process nested referrals
-            if (ref.referrals && Array.isArray(ref.referrals)) {
-                flattenReferrals(ref.referrals);
-            }
+            page++;
+        } else {
+            hasMore = false;
         }
     }
 
-    // Process directReferrals from the API response
-    if (apiResponse.data.directReferrals) {
-        flattenReferrals(apiResponse.data.directReferrals);
+    console.log(`[FETCH_ALL] Completed - total affiliates: ${allAffiliates.length}`);
+    return allAffiliates;
+}
+
+async function findAffiliateByUsername(username) {
+    console.log(`[SEARCH] Looking for username: "${username}"`);
+    let page = 1;
+    let hasMore = true;
+
+    while (hasMore) {
+        const response = await fetchAffiliatesPage(page);
+
+        if (!response) {
+            console.log(`[SEARCH] Failed to get response for page ${page}`);
+            return { found: false, error: 'Failed to fetch affiliate data' };
+        }
+
+        const affiliates = response.data?.affiliates || response.affiliates || response.data || response;
+        console.log(`[SEARCH] Page ${page} - Is array: ${Array.isArray(affiliates)}, Length: ${Array.isArray(affiliates) ? affiliates.length : 'N/A'}`);
+
+        if (!Array.isArray(affiliates)) {
+            console.log(`[SEARCH] Invalid response format. Type: ${typeof affiliates}`);
+            return { found: false, error: 'Invalid API response format' };
+        }
+
+        // Log first few affiliates to see the data structure
+        if (affiliates.length > 0) {
+            console.log(`[SEARCH] Sample affiliate object keys: ${Object.keys(affiliates[0]).join(', ')}`);
+            const sampleNames = affiliates.slice(0, 5).map(a => a.username || a.name || a.user?.username || a.user?.name || 'UNKNOWN');
+            console.log(`[SEARCH] First 5 usernames on page ${page}: ${sampleNames.join(', ')}`);
+        }
+
+        // Search for the username in this page
+        const match = affiliates.find(affiliate => {
+            const name = affiliate.username || affiliate.name || affiliate.user?.username || affiliate.user?.name || '';
+            return name.toLowerCase() === username.toLowerCase();
+        });
+
+        if (match) {
+            console.log(`[SEARCH] Found match on page ${page}:`, JSON.stringify(match).substring(0, 300));
+            return { found: true, user: match };
+        }
+
+        // Check if there are more pages
+        const total = response.data?.total || response.data?.totalCount || response.total || response.totalCount;
+        console.log(`[SEARCH] Page ${page} - Total from response: ${total}, Current count: ${affiliates.length}`);
+
+        if (total) {
+            hasMore = page * PAGE_SIZE < total;
+        } else {
+            hasMore = affiliates.length === PAGE_SIZE;
+        }
+        console.log(`[SEARCH] Has more pages: ${hasMore}`);
+        page++;
     }
 
-    return allReferrals;
+    console.log(`[SEARCH] Username "${username}" not found after searching all pages`);
+    return { found: false, error: 'Username not found' };
 }
 
 async function verifyUsername(username) {
-    const referrals = await fetchReferrals();
+    console.log(`[VERIFY] Starting verification for: "${username}"`);
+    const result = await findAffiliateByUsername(username);
 
-    if (!referrals) {
-        return { success: false, error: 'Failed to fetch referral data' };
+    if (result.found) {
+        console.log(`[VERIFY] Success - User found: ${result.user?.username || result.user?.name || 'unknown'}`);
+        return { success: true, user: result.user };
     }
 
-    const referralList = extractReferralList(referrals);
-
-    if (referralList.length === 0) {
-        return { success: false, error: 'No referrals found in API response' };
-    }
-
-    const match = referralList.find(ref =>
-        ref.name && ref.name.toLowerCase() === username.toLowerCase()
-    );
-
-    if (match) {
-        return { success: true, user: match };
-    }
-
-    return { success: false, error: 'Username not found' };
+    console.log(`[VERIFY] Failed - ${result.error}`);
+    return { success: false, error: result.error || 'Username not found' };
 }
 
 client.once('ready', async () => {
@@ -146,6 +212,7 @@ client.on('interactionCreate', async (interaction) => {
     // Handle button clicks
     if (interaction.isButton()) {
         if (interaction.customId === 'verify_button') {
+            console.log(`[ACTION] User ${interaction.user.tag} (${interaction.user.id}) clicked verify button`);
             const modal = new ModalBuilder()
                 .setCustomId('verify_modal')
                 .setTitle('Dark Academy Verification');
@@ -173,31 +240,35 @@ client.on('interactionCreate', async (interaction) => {
             await interaction.deferReply({ ephemeral: true });
 
             const username = interaction.fields.getTextInputValue('coinwave_username').trim();
+            console.log(`[ACTION] User ${interaction.user.tag} (${interaction.user.id}) submitted verification for username: "${username}"`);
             const result = await verifyUsername(username);
 
             if (result.success) {
+                console.log(`[RESULT] Modal verification SUCCESS for ${interaction.user.tag} - matched username: "${username}"`);
                 const roleId = process.env.VERIFIED_ROLE_ID;
 
                 if (roleId) {
                     try {
                         const member = await interaction.guild.members.fetch(interaction.user.id);
                         await member.roles.add(roleId);
+                        console.log(`[ROLE] Assigned verified role to ${interaction.user.tag}`);
 
                         await interaction.editReply({
-                            content: `**Referral code verified!**\nWelcome to Dark Academy, ${result.user.name || 'member'}!`
+                            content: `**Referral code verified!**\nWelcome to Dark Academy, ${result.user.name || result.user.username || 'member'}!`
                         });
                     } catch (error) {
-                        console.error('Error assigning role:', error);
+                        console.error(`[ROLE] Error assigning role to ${interaction.user.tag}:`, error);
                         await interaction.editReply({
                             content: `**Referral code verified!**\nHowever, I couldn't assign your role. Please contact an admin.`
                         });
                     }
                 } else {
                     await interaction.editReply({
-                        content: `**Referral code verified!**\nWelcome, ${result.user.name || 'member'}!`
+                        content: `**Referral code verified!**\nWelcome, ${result.user.name || result.user.username || 'member'}!`
                     });
                 }
             } else {
+                console.log(`[RESULT] Modal verification FAILED for ${interaction.user.tag} - username: "${username}" - reason: ${result.error}`);
                 await interaction.editReply({
                     content: `**Verification failed.**\nThe username \`${username}\` was not found. Make sure you used the referral code VONDRAKEN when signing up.`
                 });
@@ -212,22 +283,24 @@ client.on('interactionCreate', async (interaction) => {
         await interaction.deferReply({ ephemeral: true });
 
         const username = interaction.options.getString('username');
+        console.log(`[ACTION] User ${interaction.user.tag} (${interaction.user.id}) used /verify command for username: "${username}"`);
         const result = await verifyUsername(username);
 
         if (result.success) {
-            // Try to assign the verified role
+            console.log(`[RESULT] Command verification SUCCESS for ${interaction.user.tag} - matched username: "${username}"`);
             const roleId = process.env.VERIFIED_ROLE_ID;
 
             if (roleId) {
                 try {
                     const member = await interaction.guild.members.fetch(interaction.user.id);
                     await member.roles.add(roleId);
+                    console.log(`[ROLE] Assigned verified role to ${interaction.user.tag}`);
 
                     await interaction.editReply({
                         content: `**Referral code verified!**\nWelcome to Dark Academy!`
                     });
                 } catch (error) {
-                    console.error('Error assigning role:', error);
+                    console.error(`[ROLE] Error assigning role to ${interaction.user.tag}:`, error);
                     await interaction.editReply({
                         content: `**Referral code verified!**\nHowever, I couldn't assign your role. Please contact an admin.`
                     });
@@ -238,6 +311,7 @@ client.on('interactionCreate', async (interaction) => {
                 });
             }
         } else {
+            console.log(`[RESULT] Command verification FAILED for ${interaction.user.tag} - username: "${username}" - reason: ${result.error}`);
             await interaction.editReply({
                 content: `**Verification failed.**\n${result.error}`
             });
@@ -245,34 +319,27 @@ client.on('interactionCreate', async (interaction) => {
     }
 
     if (interaction.commandName === 'check-referrals') {
+        console.log(`[ACTION] Admin ${interaction.user.tag} used /check-referrals command`);
         await interaction.deferReply({ ephemeral: true });
 
-        const referrals = await fetchReferrals();
+        const affiliates = await fetchAllAffiliates();
+        console.log(`[CHECK] Fetched ${affiliates?.length || 0} total affiliates`);
 
-        if (!referrals) {
+        if (!affiliates || affiliates.length === 0) {
             await interaction.editReply({
-                content: '❌ Failed to fetch referral data from the API.'
+                content: '📋 No affiliates found.'
             });
             return;
         }
 
-        const referralList = extractReferralList(referrals);
-
-        if (referralList.length === 0) {
-            await interaction.editReply({
-                content: '📋 No referrals found.'
-            });
-            return;
-        }
-
-        const referralInfo = referralList.slice(0, 20).map((ref, i) => {
-            const code = ref.referralCode || ref.code || 'N/A';
-            const name = ref.username || ref.name || ref.email || '';
+        const affiliateInfo = affiliates.slice(0, 20).map((affiliate, i) => {
+            const code = affiliate.referralCode || affiliate.code || 'N/A';
+            const name = affiliate.username || affiliate.name || affiliate.email || '';
             return `${i + 1}. Code: \`${code}\` ${name ? `- ${name}` : ''}`;
         }).join('\n');
 
         await interaction.editReply({
-            content: `**Referrals (${referralList.length} total):**\n${referralInfo}${referralList.length > 20 ? '\n... and more' : ''}`
+            content: `**Affiliates (${affiliates.length} total):**\n${affiliateInfo}${affiliates.length > 20 ? '\n... and more' : ''}`
         });
     }
 
